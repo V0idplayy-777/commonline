@@ -6,15 +6,15 @@ export default function SetupScreen() {
       <header className="cl-setup-header">
         <div className="cl-brand-lockup">
           <span className="cl-brand-mark" aria-hidden="true"><span /><span /></span>
-          <span><strong>COMMONLINE</strong><small>AOTEAROA NETWORK</small></span>
+          <span><strong>COMMONLINE</strong><small>UR GAY</small></span>
         </div>
         <span className="cl-setup-status"><i /> DEPLOYMENT NOT CONNECTED</span>
       </header>
       <section className="cl-setup-hero">
         <div className="cl-setup-copy">
           <div className="cl-eyebrow"><span className="cl-eyebrow-dot" /> READY FOR DEPLOYMENT</div>
-          <h1>A network for useful work.</h1>
-          <p>Commonline is wired to Convex. The database is empty by design: no sample accounts, posts or activity are loaded.</p>
+          <h1>UR GAY.</h1>
+          <p>You are gay</p>
           <div className="cl-setup-features">
             <span><Check size={15} /> Real-time posts, replies and saves</span>
             <span><Check size={15} /> Username and password accounts</span>
