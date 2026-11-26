@@ -35,7 +35,7 @@ export default function SetupScreen() {
           <a className="cl-setup-doc-link" href="https://dashboard.convex.dev/" target="_blank" rel="noreferrer">Open Convex dashboard <ArrowRight size={14} /></a>
         </div>
       </section>
-      <footer className="cl-setup-footer"><span><UsersRound size={14} /> A professional network for Aotearoa</span><span>Empty data. Ready to connect.</span></footer>
+      <footer className="cl-setup-footer"><span><UsersRound size={14} /> A global network for people and projects</span><span>Empty data. Ready to connect.</span></footer>
     </main>
   );
 }
