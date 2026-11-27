@@ -2,6 +2,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { components } from "./_generated/api";
 import { internalMutation, query, mutation } from "./_generated/server";
+import { isAdminUsername } from "./adminShared";
 
 const AVATAR_COLOURS = ["#b5cbbf", "#c7b7a6", "#a9bdc1", "#c4b7c7", "#d4bb9d", "#9eb7a2"];
 
@@ -34,7 +35,13 @@ export const current = query({
     const user = await ctx.db.get(userId);
     if (!user) return null;
     const username = await ctx.runQuery(components.authUsername.public.getUsername, { userId });
-    return { ...user, username: username ?? user.handle };
+    return {
+      ...user,
+      username: username ?? user.handle,
+      verified: user.verified === true,
+      suspended: user.suspended === true,
+      isAdmin: isAdminUsername(username ?? "", user.handle),
+    };
   },
 });
 
@@ -60,6 +67,7 @@ export const saveProfile = mutation({
     const username = await ctx.runQuery(components.authUsername.public.getUsername, { userId });
     const user = await ctx.db.get(userId);
     if (!user) throw new ConvexError("Profile not found.");
+    if (user.suspended) throw new ConvexError("Your account is suspended. Contact an administrator.");
     await ctx.db.patch(userId, {
       displayName,
       role,

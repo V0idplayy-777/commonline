@@ -1,6 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { query, mutation } from "./_generated/server";
+import { assertAccountActive, assertNetworkOpen, getSettings } from "./adminShared";
 
 export const list = query({
   args: { search: v.string() },
@@ -24,6 +25,7 @@ export const list = query({
         role: user.role,
         bio: user.bio,
         avatar: user.avatarColor,
+        verified: user.verified === true,
         followed: followedIds.has(user._id),
       }));
   },
@@ -35,6 +37,10 @@ export const toggleFollow = mutation({
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new ConvexError("Sign in to follow members.");
     if (userId === targetId) throw new ConvexError("You cannot follow your own profile.");
+    const viewer = await ctx.db.get(userId);
+    if (!viewer) throw new ConvexError("Sign in to follow members.");
+    assertAccountActive(viewer);
+    assertNetworkOpen(await getSettings(ctx));
     const target = await ctx.db.get(targetId);
     if (!target || !target.displayName.trim()) throw new ConvexError("Member not found.");
     const existing = await ctx.db
