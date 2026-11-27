@@ -7,7 +7,9 @@ import {
   Bookmark,
   BookmarkCheck,
   Check,
+  CheckCircle2,
   ChevronDown,
+  Circle,
   Compass,
   Copy,
   FileText,
@@ -16,6 +18,8 @@ import {
   Hash,
   Heart,
   House,
+  Layers,
+  Lightbulb,
   LogOut,
   Menu,
   MessageCircle,
@@ -25,6 +29,7 @@ import {
   Settings,
   Share2,
   Sparkles,
+  Target,
   Trash2,
   TrendingUp,
   Trophy,
@@ -41,6 +46,7 @@ import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import { CelebrationBurst, RewardStack, type RewardPop } from "./components/CelebrationBurst";
+import { RapidFlowModal } from "./components/RapidFlowModal";
 import { CardSwap } from "./components/bencho/CardSwap";
 import { EyeTracker } from "./components/bencho/EyeTracker";
 import { LabelInput } from "./components/bencho/LabelInput";
@@ -50,9 +56,13 @@ import { RollingCounter } from "./components/bencho/RollingCounter";
 import { ToastStack } from "./components/bencho/ToastStack";
 import {
   DAILY_ACTION_TARGET,
+  getDailyPrompt,
+  getDailyQuests,
   getLastSevenDays,
+  getRelatedPosts,
   getTierInfo,
   getTimeGreeting,
+  getWeeklyRecap,
   loadDraft,
   loadEngagementState,
   rankPosts,
@@ -224,7 +234,7 @@ function AuthScreen() {
           <p>Commonline connects curious builders, thinkers, and makers worldwide in a fast, signal-rich stream.</p>
           <div className="cl-auth-points">
             <span><Check size={15} /> A personalized feed that adapts to what sparks your curiosity</span>
-            <span><Check size={15} /> Daily streaks, momentum tiers, and real-time threads</span>
+            <span><Check size={15} /> Daily streaks, quests, and Rapid Flow reading mode</span>
             <span><Check size={15} /> Build your private vault of high-signal ideas</span>
           </div>
         </section>
@@ -317,6 +327,7 @@ function PostCard({
   isTrending,
   comboCount,
   openRepliesSignal,
+  relatedPosts,
   onLike,
   onBookmark,
   onReply,
@@ -324,6 +335,8 @@ function PostCard({
   onRemove,
   onTopicClick,
   onRead,
+  onOpenAuthor,
+  onJumpToPost,
 }: {
   post: Post;
   viewerId: string;
@@ -331,6 +344,7 @@ function PostCard({
   isTrending?: boolean;
   comboCount: number;
   openRepliesSignal?: number;
+  relatedPosts?: Post[];
   onLike: (post: Post) => void;
   onBookmark: (post: Post) => void;
   onReply: (postId: string, body: string) => Promise<void>;
@@ -338,6 +352,8 @@ function PostCard({
   onRemove: (post: Post) => void;
   onTopicClick?: (topic: string) => void;
   onRead?: (post: Post) => void;
+  onOpenAuthor?: (authorId: string) => void;
+  onJumpToPost?: (postId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -353,7 +369,6 @@ function PostCard({
     }
   }, [openRepliesSignal]);
 
-  // Passive read detection for weekly reading goal & affinity learning
   useEffect(() => {
     if (!onRead || readRecorded.current) return;
     const el = cardRef.current;
@@ -411,8 +426,8 @@ function PostCard({
   const isLong = post.body.length > COLLAPSE_THRESHOLD;
   const isFresh = Date.now() - post.createdAt < 30 * 60_000;
   const isHotThread = post.commentCount >= 2;
-  // Variable-reward burst: Firework on combos or milestone likes!
   const useFirework = comboCount >= 2 || post.likes === 0 || (post.likes + 1) % 5 === 0;
+  const showRelated = (open || expanded) && (relatedPosts?.length ?? 0) > 0;
 
   return (
     <article
@@ -427,10 +442,19 @@ function PostCard({
         </span>
       )}
       <div className="cl-post-header">
-        <Avatar name={post.author.name} colour={post.author.avatar} />
+        <button
+          type="button"
+          className="cl-post-author-button"
+          onClick={() => onOpenAuthor?.(post.author.id)}
+          aria-label={`View ${post.author.name}'s profile`}
+        >
+          <Avatar name={post.author.name} colour={post.author.avatar} />
+        </button>
         <div className="cl-post-author">
           <div className="cl-post-name">
-            <strong>{post.author.name}</strong>
+            <button type="button" className="cl-author-name-btn" onClick={() => onOpenAuthor?.(post.author.id)}>
+              <strong>{post.author.name}</strong>
+            </button>
             <span>@{post.author.handle}</span>
             {isTrending && <span className="cl-post-badge cl-badge-trending"><TrendingUp size={10} /> Trending</span>}
             {!isTrending && isHotThread && <span className="cl-post-badge cl-badge-hot"><Flame size={10} /> Active thread</span>}
@@ -514,16 +538,44 @@ function PostCard({
           </form>
         </div>
       )}
+      {showRelated && relatedPosts && (
+        <div className="cl-related-trail">
+          <span className="cl-related-label"><Sparkles size={11} /> Keep pulling this thread</span>
+          <div className="cl-related-list">
+            {relatedPosts.map((rel) => (
+              <button key={rel.id} type="button" className="cl-related-item" onClick={() => onJumpToPost?.(rel.id)}>
+                <strong>{rel.author.name} · #{rel.topic}</strong>
+                <span>{rel.body.slice(0, 92)}{rel.body.length > 92 ? "…" : ""}</span>
+                <ArrowRight size={12} />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </article>
   );
 }
 
-function MemberCard({ member, onFollow, compact = false }: { member: Member; onFollow: (member: Member) => void; compact?: boolean }) {
+function MemberCard({
+  member,
+  onFollow,
+  onInspect,
+  compact = false,
+}: {
+  member: Member;
+  onFollow: (member: Member) => void;
+  onInspect?: (memberId: string) => void;
+  compact?: boolean;
+}) {
   return (
     <article className={`cl-member-card ${compact ? "is-compact" : ""}`}>
-      <Avatar name={member.name} colour={member.avatar} size={compact ? "sm" : "lg"} />
+      <button type="button" className="cl-post-author-button" onClick={() => onInspect?.(member.id)} aria-label={`Inspect ${member.name}`}>
+        <Avatar name={member.name} colour={member.avatar} size={compact ? "sm" : "lg"} />
+      </button>
       <div className="cl-member-detail">
-        <strong>{member.name}</strong>
+        <button type="button" className="cl-author-name-btn" onClick={() => onInspect?.(member.id)}>
+          <strong>{member.name}</strong>
+        </button>
         <span>@{member.handle}</span>
         {member.role && <p className="cl-member-role">{member.role}</p>}
         {!compact && member.bio && <p className="cl-member-bio">{member.bio}</p>}
@@ -591,7 +643,14 @@ function Workspace({ profile }: { profile: Profile }) {
   const [activeIndex, setActiveIndex] = useState(-1);
   const [replySignal, setReplySignal] = useState<{ postId: string; count: number }>({ postId: "", count: 0 });
   const [newPostCount, setNewPostCount] = useState(0);
+  const [flowOpen, setFlowOpen] = useState(false);
+  const [digestDismissed, setDigestDismissed] = useState(false);
+  const [promptDismissed, setPromptDismissed] = useState(false);
+  const [recapOpen, setRecapOpen] = useState(false);
+  const [inspectedMemberId, setInspectedMemberId] = useState<string | null>(null);
 
+  // Capture previous visit timestamp once on mount for "While you were away" digest
+  const previousVisitAt = useRef(engagement.lastVisitAt);
   const sessionSalt = useRef(Math.floor(Math.random() * 100_000));
   const comboRef = useRef<{ count: number; lastAt: number }>({ count: 0, lastAt: 0 });
   const seenFeedIds = useRef<Set<string> | null>(null);
@@ -608,6 +667,7 @@ function Workspace({ profile }: { profile: Profile }) {
   const topics = useQuery(api.posts.topics, {}) as Topic[] | undefined;
   const summary = useQuery(api.posts.summary, {});
   const members = useQuery(api.members.list, { search: memberSearch }) as Member[] | undefined;
+  const allMembers = useQuery(api.members.list, { search: "" }) as Member[] | undefined;
   const notifications = useQuery(api.notifications.unread, {}) as NotificationItem[] | undefined;
   const preferences = useQuery(api.preferences.current, {});
 
@@ -625,6 +685,20 @@ function Workspace({ profile }: { profile: Profile }) {
   useEffect(() => {
     saveEngagementState(profile._id, engagement);
   }, [profile._id, engagement]);
+
+  // Update lastVisitAt cleanly when tab hides or unmounts
+  useEffect(() => {
+    const stampVisit = () => {
+      setEngagement((prev) => ({ ...prev, lastVisitAt: Date.now() }));
+    };
+    const onVis = () => { if (document.hidden) stampVisit(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("beforeunload", stampVisit);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("beforeunload", stampVisit);
+    };
+  }, []);
 
   // Persist unfinished draft (Zeigarnik open-loop recovery)
   useEffect(() => {
@@ -653,15 +727,74 @@ function Workspace({ profile }: { profile: Profile }) {
   }, [posts]);
 
   const suggestedMembers = useMemo(() => {
-    return (members ?? []).filter((m) => !m.followed).slice(0, 3);
-  }, [members]);
+    return (allMembers ?? []).filter((m) => !m.followed).slice(0, 3);
+  }, [allMembers]);
 
   const deck = useMemo(
     () => (posts ?? []).slice(0, 4).map((post) => ({ id: post.id, title: post.topic, body: post.body })),
     [posts],
   );
 
-  // Detect live incoming posts from others when user has scrolled down
+  // "While you were away" real catch-up stats
+  const catchUpSummary = useMemo(() => {
+    const list = posts ?? [];
+    if (!list.length) return null;
+    const since = previousVisitAt.current;
+    const awayMinutes = (Date.now() - since) / 60_000;
+    const freshSinceVisit = list.filter((p) => p.createdAt > since && p.author.id !== profile._id);
+    const activeThreads = list.filter((p) => p.commentCount > 0);
+    if (freshSinceVisit.length > 0) {
+      const topTopic = freshSinceVisit[0].topic;
+      return {
+        headline: `${freshSinceVisit.length} new ${freshSinceVisit.length === 1 ? "update" : "updates"} since your last visit`,
+        detail: `${activeThreads.length} active threads · Heating up in #${topTopic}`,
+      };
+    }
+    if (awayMinutes >= 30 && activeThreads.length > 0) {
+      return {
+        headline: `${activeThreads.length} active ${activeThreads.length === 1 ? "discussion" : "discussions"} waiting in the stream`,
+        detail: `Catch up in 60 seconds with Rapid Flow mode.`,
+      };
+    }
+    return null;
+  }, [posts, profile._id]);
+
+  // Inspected member profile data for clickable profile drawer
+  const inspectedMember = useMemo(() => {
+    if (!inspectedMemberId) return null;
+    if (inspectedMemberId === profile._id) {
+      return {
+        id: profile._id,
+        name: profile.displayName,
+        handle: profile.handle || profile.username,
+        role: profile.role,
+        bio: profile.bio,
+        avatar: profile.avatarColor,
+        followed: false,
+        isSelf: true,
+      };
+    }
+    const found = (allMembers ?? []).find((m) => m.id === inspectedMemberId);
+    if (found) return { ...found, isSelf: false };
+    const authorPost = (posts ?? []).find((p) => p.author.id === inspectedMemberId);
+    if (!authorPost) return null;
+    return {
+      id: authorPost.author.id,
+      name: authorPost.author.name,
+      handle: authorPost.author.handle,
+      role: authorPost.author.role,
+      bio: "",
+      avatar: authorPost.author.avatar,
+      followed: false,
+      isSelf: false,
+    };
+  }, [inspectedMemberId, allMembers, posts, profile]);
+
+  const inspectedMemberPosts = useMemo(() => {
+    if (!inspectedMemberId) return [];
+    return (posts ?? []).filter((p) => p.author.id === inspectedMemberId);
+  }, [inspectedMemberId, posts]);
+
   useEffect(() => {
     if (!posts || page !== "home" || postSearch) return;
     const ids = new Set(posts.map((p) => p.id));
@@ -701,7 +834,6 @@ function Workspace({ profile }: { profile: Profile }) {
 
   const unreadCount = notifications?.length ?? 0;
 
-  // Dynamic browser tab title & re-engagement trigger on visibility change
   useEffect(() => {
     const baseTitle = unreadCount > 0 ? `(${unreadCount}) Commonline` : "Commonline";
     const syncTitle = () => {
@@ -732,7 +864,7 @@ function Workspace({ profile }: { profile: Profile }) {
     setRewards((prev) => [...prev.slice(-2), { id, label, sublabel, tone }]);
     window.setTimeout(() => {
       setRewards((prev) => prev.filter((item) => item.id !== id));
-    }, 2400);
+    }, 2600);
   }, []);
 
   const triggerCelebration = useCallback(() => {
@@ -748,13 +880,15 @@ function Workspace({ profile }: { profile: Profile }) {
           if (outcome.tierUp) {
             pushReward(`Level up: ${outcome.tierUp.name}!`, "tier", `+${outcome.xpEarned} XP`);
             triggerCelebration();
-          } else if (outcome.streakJustLocked) {
-            pushReward(
-              `${outcome.state.streak}-day streak locked!`,
-              "streak",
-              `+${outcome.xpEarned} XP bonus`,
-            );
+          } else if (outcome.allQuestsSweep) {
+            pushReward("All 3 daily quests cleared!", "tier", "+40 XP sweep bonus");
             triggerCelebration();
+          } else if (outcome.streakJustLocked) {
+            pushReward(`${outcome.state.streak}-day streak locked!`, "streak", `+${outcome.xpEarned} XP bonus`);
+            triggerCelebration();
+          } else if (outcome.questCompleted) {
+            pushReward(`Quest done: ${outcome.questCompleted.title}`, "streak", `+${outcome.questCompleted.rewardXp} XP`);
+            playMilestoneSound();
           } else if (outcome.weeklyGoalJustHit) {
             pushReward("Weekly reading target hit!", "tier", "+30 XP bonus");
             triggerCelebration();
@@ -911,6 +1045,13 @@ function Workspace({ profile }: { profile: Profile }) {
     applyEngagement("read", { topic: post.topic, authorId: post.author.id, postId: post.id });
   }, [applyEngagement]);
 
+  const jumpToPost = useCallback((postId: string) => {
+    const idx = rankedPosts.findIndex((p) => p.id === postId);
+    if (idx >= 0) setActiveIndex(idx);
+    playTabSound();
+    document.getElementById(`post-${postId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [rankedPosts]);
+
   const submitSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setPostSearch(searchInput.trim());
@@ -938,9 +1079,10 @@ function Workspace({ profile }: { profile: Profile }) {
     }
   };
 
-  // Keyboard power-browsing (J/K glide, L like, S save, R reply, N compose, / search)
+  // Keyboard power-browsing (J/K glide, L like, S save, R reply, N compose, F rapid flow, / search)
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (flowOpen || recapOpen) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) {
         return;
@@ -955,6 +1097,12 @@ function Workspace({ profile }: { profile: Profile }) {
       if (key === "n" && page === "home") {
         event.preventDefault();
         setComposerOpen(true);
+        return;
+      }
+      if (key === "f" && page === "home" && rankedPosts.length > 0) {
+        event.preventDefault();
+        playTabSound();
+        setFlowOpen(true);
         return;
       }
       if ((page === "home" || page === "saved") && rankedPosts.length > 0) {
@@ -985,7 +1133,7 @@ function Workspace({ profile }: { profile: Profile }) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [page, rankedPosts, activeIndex, handleLike, handleBookmark]);
+  }, [page, rankedPosts, activeIndex, flowOpen, recapOpen, handleLike, handleBookmark]);
 
   const currentPosts = rankedPosts;
   const tierInfo = getTierInfo(engagement.xp);
@@ -994,9 +1142,12 @@ function Workspace({ profile }: { profile: Profile }) {
   const weeklyReadCount = engagement.readPostIds.length;
   const weeklyProgress = Math.min(1, weeklyReadCount / Math.max(1, weeklyGoal));
   const sevenDays = getLastSevenDays(engagement.activeDays, engagement.todayKey);
+  const dailyQuests = useMemo(() => getDailyQuests(engagement.todayKey), [engagement.todayKey]);
+  const dailyPrompt = useMemo(() => getDailyPrompt(engagement.todayKey), [engagement.todayKey]);
+  const completedQuestCount = dailyQuests.filter((q) => engagement.completedQuestIds.includes(q.id)).length;
+  const weeklyRecap = useMemo(() => getWeeklyRecap(engagement, weeklyGoal), [engagement, weeklyGoal]);
 
-  // Zeigarnik profile completion calculation
-  const followingCount = (members ?? []).filter((m) => m.followed).length;
+  const followingCount = (allMembers ?? []).filter((m) => m.followed).length;
   const completionChecks = [
     { done: profile.displayName.trim().length >= 2, label: "display name" },
     { done: profile.role.trim().length > 0, label: "add your role", action: () => changePage("settings") },
@@ -1028,7 +1179,7 @@ function Workspace({ profile }: { profile: Profile }) {
         </nav>
         <div className="cl-sidebar-rule" />
         <div className="cl-nav-label">YOUR MOMENTUM</div>
-        <div className="cl-momentum-mini">
+        <button type="button" className="cl-momentum-mini" onClick={() => { playTabSound(); setRecapOpen(true); }} title="Open weekly recap">
           <div className="cl-momentum-mini-top">
             <MomentumRing
               progress={dailyProgress}
@@ -1044,7 +1195,7 @@ function Workspace({ profile }: { profile: Profile }) {
               </strong>
               <small>
                 {engagement.streakLockedToday
-                  ? "Locked in today!"
+                  ? "Locked in · View recap →"
                   : `${actionsRemaining} ${actionsRemaining === 1 ? "action" : "actions"} to lock today`}
               </small>
             </div>
@@ -1059,7 +1210,7 @@ function Workspace({ profile }: { profile: Profile }) {
             </div>
             {tierInfo.next && <small className="cl-tier-next">{tierInfo.xpToNext} XP to {tierInfo.next.name}</small>}
           </div>
-        </div>
+        </button>
 
         <div className="cl-sidebar-rule" />
         <div className="cl-nav-label">YOUR ACCOUNT</div>
@@ -1093,8 +1244,8 @@ function Workspace({ profile }: { profile: Profile }) {
             <button
               type="button"
               className={`cl-streak-pill ${engagement.streakLockedToday ? "is-locked" : "is-open-loop"}`}
-              onClick={() => changePage("settings")}
-              title={engagement.streakLockedToday ? "Daily streak locked!" : `${actionsRemaining} actions left to lock today's streak`}
+              onClick={() => { playTabSound(); setRecapOpen(true); }}
+              title={engagement.streakLockedToday ? "Daily streak locked! Open recap" : `${actionsRemaining} actions left to lock today's streak`}
             >
               <Flame size={14} />
               <span>{engagement.streak}</span>
@@ -1131,9 +1282,33 @@ function Workspace({ profile }: { profile: Profile }) {
                 </div>
                 <div className="cl-heading-actions">
                   <span className="cl-live-count"><i className="cl-live-dot" /> <strong>{summary?.members ?? "—"}</strong> worldwide</span>
+                  {currentPosts.length > 0 && (
+                    <button type="button" className="cl-button cl-button-secondary" onClick={() => { playTabSound(); setFlowOpen(true); }}>
+                      <Layers size={15} /> Rapid Flow
+                    </button>
+                  )}
                   <button type="button" className="cl-button cl-button-primary" onClick={() => setComposerOpen(true)}><Plus size={16} /> New update</button>
                 </div>
               </section>
+
+              {catchUpSummary && !digestDismissed && !postSearch && (
+                <div className="cl-digest-banner">
+                  <div className="cl-digest-icon"><Sparkles size={16} /></div>
+                  <div className="cl-digest-copy">
+                    <span className="cl-digest-kicker">WHILE YOU WERE AWAY</span>
+                    <strong>{catchUpSummary.headline}</strong>
+                    <small>{catchUpSummary.detail}</small>
+                  </div>
+                  <div className="cl-digest-actions">
+                    <button type="button" className="cl-button cl-button-primary cl-digest-btn" onClick={() => { playTabSound(); setFlowOpen(true); setDigestDismissed(true); }}>
+                      Rapid Flow <ArrowRight size={13} />
+                    </button>
+                    <button type="button" className="cl-icon-button" aria-label="Dismiss digest" onClick={() => setDigestDismissed(true)}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {completionPct < 100 && !engagement.dismissedProfileNudge && nextIncomplete && (
                 <div className="cl-completion-banner">
@@ -1208,6 +1383,31 @@ function Workspace({ profile }: { profile: Profile }) {
                       </button>
                     ))}
                   </div>
+
+                  {!promptDismissed && !composerOpen && !hasDraft && !postSearch && (
+                    <div className="cl-prompt-card">
+                      <div className="cl-prompt-top">
+                        <span><Lightbulb size={12} /> TODAY’S PROMPT · #{dailyPrompt.topic}</span>
+                        <button type="button" className="cl-icon-button cl-prompt-dismiss" aria-label="Dismiss prompt" onClick={() => setPromptDismissed(true)}>
+                          <X size={13} />
+                        </button>
+                      </div>
+                      <p>{dailyPrompt.question}</p>
+                      <button
+                        type="button"
+                        className="cl-prompt-cta"
+                        onClick={() => {
+                          playTabSound();
+                          setTopic(dailyPrompt.topic);
+                          setBody(dailyPrompt.starter);
+                          setComposerOpen(true);
+                        }}
+                      >
+                        Answer today’s prompt (+25 XP) <ArrowRight size={13} />
+                      </button>
+                    </div>
+                  )}
+
                   <section className={`cl-composer ${composerOpen ? "is-open" : ""} ${hasDraft ? "has-draft" : ""}`}>
                     <Avatar name={profile.displayName} colour={profile.avatarColor} size="sm" />
                     {!composerOpen ? (
@@ -1256,6 +1456,7 @@ function Workspace({ profile }: { profile: Profile }) {
                             isTrending={post.id === trendingPostId}
                             comboCount={comboRef.current.count}
                             openRepliesSignal={replySignal.postId === post.id ? replySignal.count : 0}
+                            relatedPosts={getRelatedPosts(post, currentPosts, 2)}
                             onLike={handleLike}
                             onBookmark={handleBookmark}
                             onReply={handleReply}
@@ -1268,17 +1469,22 @@ function Workspace({ profile }: { profile: Profile }) {
                               setScope("Latest");
                             }}
                             onRead={handlePostRead}
+                            onOpenAuthor={(authorId) => {
+                              playTabSound();
+                              setInspectedMemberId(authorId);
+                            }}
+                            onJumpToPost={jumpToPost}
                           />
                         ))}
                       </div>
                       <div className="cl-feed-endcap">
                         <span><Sparkles size={13} /> Caught up on this view</span>
                         <div className="cl-feed-endcap-actions">
+                          <button type="button" onClick={() => { playTabSound(); setFlowOpen(true); }}>
+                            Launch Rapid Flow <ArrowRight size={12} />
+                          </button>
                           <button type="button" onClick={() => { playTabSound(); setScope(scope === "Rising" ? "For You" : "Rising"); window.scrollTo({ top: 0, behavior: "smooth" }); }}>
                             Switch to {scope === "Rising" ? "For You" : "Rising"} <ArrowRight size={12} />
-                          </button>
-                          <button type="button" onClick={() => changePage("explore")}>
-                            Explore more <ArrowRight size={12} />
                           </button>
                         </div>
                       </div>
@@ -1287,6 +1493,36 @@ function Workspace({ profile }: { profile: Profile }) {
                 </section>
 
                 <aside className="cl-home-rail">
+                  <section className="cl-panel cl-rail-quests">
+                    <div className="cl-panel-heading">
+                      <div>
+                        <span className="cl-section-label">DAILY QUESTS</span>
+                        <h2>{completedQuestCount === 3 ? "Daily sweep complete!" : `${completedQuestCount}/3 cleared today`}</h2>
+                      </div>
+                      <Target size={16} />
+                    </div>
+                    <div className="cl-quest-list">
+                      {dailyQuests.map((quest) => {
+                        const done = engagement.completedQuestIds.includes(quest.id);
+                        const progress = Math.min(quest.target, engagement.todayQuestCounts[quest.action] ?? 0);
+                        return (
+                          <div key={quest.id} className={`cl-quest-row ${done ? "is-done" : ""}`}>
+                            <span className="cl-quest-check">
+                              {done ? <CheckCircle2 size={15} /> : <Circle size={15} />}
+                            </span>
+                            <div className="cl-quest-body">
+                              <strong>{quest.title}</strong>
+                              <small>{done ? `Completed · +${quest.rewardXp} XP` : `${progress}/${quest.target} · +${quest.rewardXp} XP`}</small>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="cl-quest-footer">
+                      {completedQuestCount === 3 ? "All 3 cleared (+40 XP sweep bonus earned)" : "Finish all 3 for a +40 XP sweep bonus"}
+                    </div>
+                  </section>
+
                   <section className="cl-panel cl-rail-pulse">
                     <div className="cl-panel-heading">
                       <div>
@@ -1335,7 +1571,13 @@ function Workspace({ profile }: { profile: Profile }) {
                       <div className="cl-panel-heading"><div><span className="cl-section-label">WHO TO FOLLOW</span><h2>Expand your signal</h2></div><UsersRound size={17} /></div>
                       <div className="cl-member-list">
                         {suggestedMembers.map((member) => (
-                          <MemberCard key={member.id} member={member} onFollow={handleFollow} compact />
+                          <MemberCard
+                            key={member.id}
+                            member={member}
+                            onFollow={handleFollow}
+                            onInspect={(id) => { playTabSound(); setInspectedMemberId(id); }}
+                            compact
+                          />
                         ))}
                       </div>
                     </section>
@@ -1348,7 +1590,7 @@ function Workspace({ profile }: { profile: Profile }) {
 
                   <div className="cl-network-note">
                     <Globe2 size={15} />
-                    <p>People everywhere, connected by the work they share. <span className="cl-kbd-hint">Keys: J/K scroll · L like · N post</span></p>
+                    <p>People everywhere, connected by the work they share. <span className="cl-kbd-hint">Keys: J/K scroll · L like · F flow · N post</span></p>
                   </div>
                 </aside>
               </div>
@@ -1369,7 +1611,7 @@ function Workspace({ profile }: { profile: Profile }) {
                 <section className="cl-panel cl-explore-members">
                   <div className="cl-panel-heading"><div><span className="cl-section-label">MEMBER DIRECTORY</span><h2>People to follow</h2></div><UsersRound size={17} /></div>
                   <label className="cl-directory-search"><Search size={15} /><input value={memberSearch} onChange={(event) => setMemberSearch(event.target.value)} placeholder="Search names, roles or bios" aria-label="Search members" /></label>
-                  {members === undefined ? <div className="cl-loading-card"><span /><span /></div> : members.length ? <div className="cl-member-list">{members.map((member) => <MemberCard key={member.id} member={member} onFollow={handleFollow} />)}</div> : <EmptyState icon="members" title={memberSearch ? "No members found" : "No other members yet"} body={memberSearch ? "Try another name or role." : "Invite a colleague or friend to grow the network."} action={!memberSearch ? { label: "Share Commonline", onClick: handleShareCommonline } : undefined} />}
+                  {members === undefined ? <div className="cl-loading-card"><span /><span /></div> : members.length ? <div className="cl-member-list">{members.map((member) => <MemberCard key={member.id} member={member} onFollow={handleFollow} onInspect={(id) => { playTabSound(); setInspectedMemberId(id); }} />)}</div> : <EmptyState icon="members" title={memberSearch ? "No members found" : "No other members yet"} body={memberSearch ? "Try another name or role." : "Invite a colleague or friend to grow the network."} action={!memberSearch ? { label: "Share Commonline", onClick: handleShareCommonline } : undefined} />}
                 </section>
               </div>
             </>
@@ -1384,7 +1626,7 @@ function Workspace({ profile }: { profile: Profile }) {
               <section className="cl-panel cl-directory-panel">
                 <div className="cl-panel-heading"><div><span className="cl-section-label">GLOBAL DIRECTORY</span><h2>{members?.length ?? "—"} other members</h2></div><UsersRound size={17} /></div>
                 <label className="cl-directory-search"><Search size={15} /><input value={memberSearch} onChange={(event) => setMemberSearch(event.target.value)} placeholder="Search names, roles or bios" aria-label="Search members" /></label>
-                {members === undefined ? <div className="cl-loading-card"><span /><span /><span /></div> : members.length ? <div className="cl-member-list">{members.map((member) => <MemberCard key={member.id} member={member} onFollow={handleFollow} />)}</div> : <EmptyState icon="members" title={memberSearch ? "No members found" : "No other members yet"} body={memberSearch ? "Try a different search." : "Share Commonline with a colleague when you're ready."} action={!memberSearch ? { label: "Share Commonline", onClick: handleShareCommonline } : undefined} />}
+                {members === undefined ? <div className="cl-loading-card"><span /><span /><span /></div> : members.length ? <div className="cl-member-list">{members.map((member) => <MemberCard key={member.id} member={member} onFollow={handleFollow} onInspect={(id) => { playTabSound(); setInspectedMemberId(id); }} />)}</div> : <EmptyState icon="members" title={memberSearch ? "No members found" : "No other members yet"} body={memberSearch ? "Try a different search." : "Share Commonline with a colleague when you're ready."} action={!memberSearch ? { label: "Share Commonline", onClick: handleShareCommonline } : undefined} />}
               </section>
             </>
           )}
@@ -1395,7 +1637,7 @@ function Workspace({ profile }: { profile: Profile }) {
                 <div><div className="cl-eyebrow"><span className="cl-eyebrow-dot" /> YOUR VAULT <span className="cl-eyebrow-separator">/</span> PRIVATE</div><h1>Saved for later.</h1><p>Your private library of high-signal ideas and threads.</p></div>
                 <BookmarkCheck size={25} className="cl-heading-icon" />
               </section>
-              {posts === undefined ? <div className="cl-loading-card"><span /><span /></div> : currentPosts.length ? <div className="cl-post-list cl-saved-list">{currentPosts.map((post, idx) => <PostCard key={post.id} post={post} viewerId={profile._id} isActive={idx === activeIndex} comboCount={comboRef.current.count} onLike={handleLike} onBookmark={handleBookmark} onReply={handleReply} onShare={handleSharePost} onRemove={handleRemove} />)}</div> : <EmptyState icon="saved" title="Your vault is empty" body="Save standout updates to keep them one click away." action={{ label: "Explore updates", onClick: () => changePage("home") }} />}
+              {posts === undefined ? <div className="cl-loading-card"><span /><span /></div> : currentPosts.length ? <div className="cl-post-list cl-saved-list">{currentPosts.map((post, idx) => <PostCard key={post.id} post={post} viewerId={profile._id} isActive={idx === activeIndex} comboCount={comboRef.current.count} onLike={handleLike} onBookmark={handleBookmark} onReply={handleReply} onShare={handleSharePost} onRemove={handleRemove} onOpenAuthor={(authorId) => { playTabSound(); setInspectedMemberId(authorId); }} />)}</div> : <EmptyState icon="saved" title="Your vault is empty" body="Save standout updates to keep them one click away." action={{ label: "Explore updates", onClick: () => changePage("home") }} />}
             </>
           )}
 
@@ -1419,6 +1661,9 @@ function Workspace({ profile }: { profile: Profile }) {
                       <div><strong>{engagement.longestStreak}d</strong><span>Best streak</span></div>
                       <div><strong>{weeklyReadCount}/{weeklyGoal}</strong><span>Read this week</span></div>
                     </div>
+                    <button type="button" className="cl-button cl-button-secondary cl-recap-trigger" onClick={() => { playTabSound(); setRecapOpen(true); }}>
+                      <Trophy size={14} /> Open weekly recap
+                    </button>
                   </section>
                   <section className="cl-panel cl-goal-panel">
                     <div className="cl-section-label">WEEKLY READING TARGET</div>
@@ -1446,6 +1691,120 @@ function Workspace({ profile }: { profile: Profile }) {
           <footer className="cl-footer"><span>COMMONLINE</span><span>Where great work finds its people.</span><span>© 2026</span></footer>
         </div>
       </main>
+
+      {flowOpen && currentPosts.length > 0 && (
+        <RapidFlowModal
+          posts={currentPosts}
+          initialIndex={Math.max(0, activeIndex)}
+          comboCount={comboRef.current.count}
+          onClose={() => setFlowOpen(false)}
+          onLike={handleLike}
+          onBookmark={handleBookmark}
+          onReply={handleReply}
+          onRead={handlePostRead}
+          onOpenAuthor={(authorId) => setInspectedMemberId(authorId)}
+        />
+      )}
+
+      {recapOpen && (
+        <>
+          <button type="button" className="cl-drawer-backdrop" aria-label="Close weekly recap" onClick={() => setRecapOpen(false)} />
+          <section className="cl-recap-modal" role="dialog" aria-modal="true" aria-label="Your weekly recap">
+            <div className="cl-drawer-header">
+              <div><span className="cl-section-label">YOUR WEEK IN REVIEW</span><h2>{profile.displayName}’s Pulse</h2></div>
+              <button type="button" className="cl-icon-button" onClick={() => setRecapOpen(false)} aria-label="Close recap"><X size={18} /></button>
+            </div>
+            <div className="cl-recap-hero">
+              <MomentumRing progress={weeklyProgress} size={64} stroke={5} label={`${weeklyRecap.readPct}%`} complete={weeklyRecap.readPct >= 100} />
+              <div>
+                <span className="cl-recap-tier"><Trophy size={12} /> {weeklyRecap.tierName} · {weeklyRecap.xp} XP</span>
+                <strong>Top affinity: #{weeklyRecap.topTopic}</strong>
+                <small>{weeklyRecap.reads} of {weeklyRecap.weeklyGoal} weekly reading goal completed</small>
+              </div>
+            </div>
+            <div className="cl-recap-grid">
+              <div><strong>{weeklyRecap.streak}d</strong><span>Active streak</span></div>
+              <div><strong>{weeklyRecap.longestStreak}d</strong><span>Best streak</span></div>
+              <div><strong>{weeklyRecap.likes}</strong><span>Likes given</span></div>
+              <div><strong>{weeklyRecap.replies}</strong><span>Replies</span></div>
+              <div><strong>{weeklyRecap.posts}</strong><span>Posts shared</span></div>
+              <div><strong>{completedQuestCount}/3</strong><span>Quests today</span></div>
+            </div>
+            <div className="cl-recap-actions">
+              <button
+                type="button"
+                className="cl-button cl-button-primary"
+                onClick={async () => {
+                  const summaryText = `My Commonline pulse: ${weeklyRecap.tierName} (${weeklyRecap.xp} XP) · ${weeklyRecap.streak}-day streak · ${weeklyRecap.reads}/${weeklyRecap.weeklyGoal} read · Top topic #${weeklyRecap.topTopic}`;
+                  try {
+                    await navigator.clipboard.writeText(summaryText);
+                    playSaveSound(true);
+                    showFlash("Weekly recap copied to clipboard.");
+                  } catch {
+                    showFlash("Could not copy recap.");
+                  }
+                }}
+              >
+                <Copy size={14} /> Copy recap card
+              </button>
+              <button type="button" className="cl-button cl-button-secondary" onClick={() => setRecapOpen(false)}>Back to feed</button>
+            </div>
+          </section>
+        </>
+      )}
+
+      {inspectedMember && (
+        <>
+          <button type="button" className="cl-drawer-backdrop" aria-label="Close profile drawer" onClick={() => setInspectedMemberId(null)} />
+          <aside className="cl-notifications-drawer cl-profile-drawer" aria-label={`${inspectedMember.name} profile`}>
+            <div className="cl-drawer-header">
+              <div><span className="cl-section-label">MEMBER PROFILE</span><h2>{inspectedMember.name}</h2></div>
+              <button type="button" className="cl-icon-button" onClick={() => setInspectedMemberId(null)} aria-label="Close profile"><X size={18} /></button>
+            </div>
+            <div className="cl-profile-drawer-card">
+              <Avatar name={inspectedMember.name} colour={inspectedMember.avatar} size="lg" />
+              <div className="cl-profile-drawer-meta">
+                <strong>@{inspectedMember.handle}</strong>
+                {inspectedMember.role && <span>{inspectedMember.role}</span>}
+              </div>
+              {!inspectedMember.isSelf && (
+                <button
+                  type="button"
+                  className={`cl-follow-button ${inspectedMember.followed ? "is-following" : ""}`}
+                  onClick={() => void handleFollow(inspectedMember)}
+                >
+                  {inspectedMember.followed ? <Check size={14} /> : <Plus size={14} />}
+                  {inspectedMember.followed ? "Following" : "Follow"}
+                </button>
+              )}
+            </div>
+            {inspectedMember.bio && <p className="cl-profile-drawer-bio">{inspectedMember.bio}</p>}
+            <div className="cl-section-label cl-drawer-sublabel">RECENT UPDATES ({inspectedMemberPosts.length})</div>
+            {inspectedMemberPosts.length > 0 ? (
+              <div className="cl-drawer-posts">
+                {inspectedMemberPosts.slice(0, 6).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="cl-drawer-post-item"
+                    onClick={() => {
+                      setInspectedMemberId(null);
+                      setPage("home");
+                      window.setTimeout(() => jumpToPost(item.id), 120);
+                    }}
+                  >
+                    <div><span>#{item.topic}</span><small>{relativeTime(item.createdAt)}</small></div>
+                    <p>{item.body.slice(0, 140)}{item.body.length > 140 ? "…" : ""}</p>
+                    <small>{item.likes} likes · {item.commentCount} replies</small>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="cl-quiet-note">No updates visible in this stream yet.</p>
+            )}
+          </aside>
+        </>
+      )}
 
       {notificationsOpen && (
         <>

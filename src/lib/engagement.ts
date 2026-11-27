@@ -19,6 +19,82 @@ export const TIERS: Tier[] = [
 
 export type EngagementAction = "like" | "reply" | "post" | "save" | "follow" | "read";
 
+export type DailyQuest = {
+  id: string;
+  action: EngagementAction;
+  title: string;
+  target: number;
+  rewardXp: number;
+};
+
+export type DailyPrompt = {
+  question: string;
+  topic: string;
+  starter: string;
+};
+
+const QUEST_POOL: DailyQuest[] = [
+  { id: "like-2", action: "like", title: "Like 2 updates that catch your eye", target: 2, rewardXp: 15 },
+  { id: "reply-1", action: "reply", title: "Drop a reply in any active thread", target: 1, rewardXp: 15 },
+  { id: "save-1", action: "save", title: "Save 1 sharp idea to your vault", target: 1, rewardXp: 15 },
+  { id: "read-3", action: "read", title: "Read 3 updates in the stream", target: 3, rewardXp: 15 },
+  { id: "follow-1", action: "follow", title: "Follow 1 new person in the network", target: 1, rewardXp: 15 },
+  { id: "post-1", action: "post", title: "Share a thought, link, or question", target: 1, rewardXp: 20 },
+];
+
+const DAILY_PROMPTS: DailyPrompt[] = [
+  {
+    question: "What’s one tool, habit, or shortcut that saved you real time this week?",
+    topic: "Resources",
+    starter: "Something that saved me hours recently: ",
+  },
+  {
+    question: "What’s an idea you changed your mind about over the last year?",
+    topic: "General",
+    starter: "I used to think ",
+  },
+  {
+    question: "What are you quietly building right now that deserves more eyes?",
+    topic: "Projects",
+    starter: "Currently working on ",
+  },
+  {
+    question: "What’s the most underrated question in your field right now?",
+    topic: "Questions",
+    starter: "A question I keep coming back to: ",
+  },
+  {
+    question: "Share one small win from the last 48 hours.",
+    topic: "Field notes",
+    starter: "Small win today: ",
+  },
+  {
+    question: "What’s one article, paper, or rabbit hole you couldn’t stop thinking about?",
+    topic: "Research",
+    starter: "Still thinking about this: ",
+  },
+  {
+    question: "If you could pair with someone here for an hour this week, what would you tackle?",
+    topic: "Opportunities",
+    starter: "Would love to compare notes on ",
+  },
+  {
+    question: "What’s a mistake that taught you something permanently useful?",
+    topic: "Field notes",
+    starter: "Lesson learned the hard way: ",
+  },
+  {
+    question: "What’s one contrarian take you actually stand behind?",
+    topic: "General",
+    starter: "Unpopular opinion I stand by: ",
+  },
+  {
+    question: "Drop a resource you wish someone had handed you six months ago.",
+    topic: "Resources",
+    starter: "Wish I had found this sooner: ",
+  },
+];
+
 export type EngagementState = {
   xp: number;
   streak: number;
@@ -37,6 +113,9 @@ export type EngagementState = {
   totalReplies: number;
   totalPosts: number;
   dismissedProfileNudge: boolean;
+  todayQuestCounts: Record<EngagementAction, number>;
+  completedQuestIds: string[];
+  allQuestsBonusClaimed: boolean;
 };
 
 export type ActionOutcome = {
@@ -46,6 +125,8 @@ export type ActionOutcome = {
   streakJustLocked: boolean;
   tierUp: Tier | null;
   weeklyGoalJustHit: boolean;
+  questCompleted: DailyQuest | null;
+  allQuestsSweep: boolean;
 };
 
 export function localDayKey(date = new Date()): string {
@@ -58,7 +139,7 @@ export function localDayKey(date = new Date()): string {
 export function localWeekKey(date = new Date()): string {
   const copy = new Date(date.getFullYear(), date.getMonth(), date.getDate());
   const day = copy.getDay();
-  const diff = (day + 6) % 7; // Monday-based week
+  const diff = (day + 6) % 7;
   copy.setDate(copy.getDate() - diff);
   return localDayKey(copy);
 }
@@ -67,6 +148,34 @@ function dayOffsetKey(daysAgo: number): string {
   const d = new Date();
   d.setDate(d.getDate() - daysAgo);
   return localDayKey(d);
+}
+
+function dayNumber(dayKey: string): number {
+  let n = 0;
+  for (let i = 0; i < dayKey.length; i += 1) {
+    n = (n * 31 + dayKey.charCodeAt(i)) >>> 0;
+  }
+  return n;
+}
+
+export function getDailyQuests(todayKey: string): DailyQuest[] {
+  const seed = dayNumber(todayKey);
+  // Always include 1 low-friction consumption/reaction quest + 2 varied engagement quests
+  const first = QUEST_POOL[seed % 2 === 0 ? 0 : 3]; // like-2 or read-3
+  const remaining = QUEST_POOL.filter((q) => q.id !== first.id);
+  const second = remaining[seed % remaining.length];
+  const rest = remaining.filter((q) => q.id !== second.id);
+  const third = rest[(seed >> 2) % rest.length];
+  return [first, second, third];
+}
+
+export function getDailyPrompt(todayKey: string): DailyPrompt {
+  const seed = dayNumber(todayKey);
+  return DAILY_PROMPTS[seed % DAILY_PROMPTS.length];
+}
+
+function emptyQuestCounts(): Record<EngagementAction, number> {
+  return { like: 0, reply: 0, post: 0, save: 0, follow: 0, read: 0 };
 }
 
 function storageKey(userId: string) {
@@ -97,6 +206,9 @@ export function defaultEngagementState(): EngagementState {
     totalReplies: 0,
     totalPosts: 0,
     dismissedProfileNudge: false,
+    todayQuestCounts: emptyQuestCounts(),
+    completedQuestIds: [],
+    allQuestsBonusClaimed: false,
   };
 }
 
@@ -104,10 +216,14 @@ export function normalizeForToday(raw: EngagementState): EngagementState {
   const today = localDayKey();
   const yesterday = dayOffsetKey(1);
   const week = localWeekKey();
-  let next = { ...raw };
+  let next: EngagementState = {
+    ...raw,
+    todayQuestCounts: { ...emptyQuestCounts(), ...(raw.todayQuestCounts ?? {}) },
+    completedQuestIds: Array.isArray(raw.completedQuestIds) ? raw.completedQuestIds : [],
+    allQuestsBonusClaimed: Boolean(raw.allQuestsBonusClaimed),
+  };
 
   if (next.todayKey !== today) {
-    // Check if streak is still alive from yesterday
     const streakStillAlive = next.lastActiveDay === yesterday || next.lastActiveDay === today;
     next = {
       ...next,
@@ -115,6 +231,9 @@ export function normalizeForToday(raw: EngagementState): EngagementState {
       todayActions: 0,
       streakLockedToday: false,
       streak: streakStillAlive ? next.streak : 0,
+      todayQuestCounts: emptyQuestCounts(),
+      completedQuestIds: [],
+      allQuestsBonusClaimed: false,
     };
   }
 
@@ -247,6 +366,8 @@ export function recordEngagementAction(
       streakJustLocked: false,
       tierUp: null,
       weeklyGoalJustHit: false,
+      questCompleted: null,
+      allQuestsSweep: false,
     };
   }
 
@@ -267,6 +388,32 @@ export function recordEngagementAction(
 
   const countsTowardDaily = action !== "read" || nextReadIds.length % 3 === 0;
   const nextTodayActions = prev.todayActions + (countsTowardDaily ? 1 : 0);
+
+  // Daily micro-quest progress
+  const nextQuestCounts: Record<EngagementAction, number> = {
+    ...prev.todayQuestCounts,
+    [action]: (prev.todayQuestCounts[action] ?? 0) + 1,
+  };
+  const dailyQuests = getDailyQuests(prev.todayKey);
+  const nextCompletedQuests = [...prev.completedQuestIds];
+  let questCompleted: DailyQuest | null = null;
+  let questBonusXp = 0;
+
+  for (const quest of dailyQuests) {
+    if (!nextCompletedQuests.includes(quest.id) && (nextQuestCounts[quest.action] ?? 0) >= quest.target) {
+      nextCompletedQuests.push(quest.id);
+      questCompleted = quest;
+      questBonusXp += quest.rewardXp;
+    }
+  }
+
+  let allQuestsSweep = false;
+  let nextAllQuestsBonus = prev.allQuestsBonusClaimed;
+  if (!nextAllQuestsBonus && dailyQuests.every((q) => nextCompletedQuests.includes(q.id))) {
+    allQuestsSweep = true;
+    nextAllQuestsBonus = true;
+    questBonusXp += 40;
+  }
 
   let nextStreak = prev.streak;
   let nextLongest = prev.longestStreak;
@@ -299,7 +446,7 @@ export function recordEngagementAction(
     nextAuthorAffinity[meta.authorId] = Math.min(50, (nextAuthorAffinity[meta.authorId] ?? 0) + weight);
   }
 
-  const bonusXp = (streakJustLocked ? 20 : 0) + (weeklyGoalJustHit ? 30 : 0);
+  const bonusXp = (streakJustLocked ? 20 : 0) + (weeklyGoalJustHit ? 30 : 0) + questBonusXp;
   const nextXp = prev.xp + xpEarned + bonusXp;
   const afterTier = getTierInfo(nextXp).current;
   const tierUp = afterTier.minXp > beforeTier.minXp ? afterTier : null;
@@ -319,6 +466,9 @@ export function recordEngagementAction(
     totalLikes: prev.totalLikes + (action === "like" ? 1 : 0),
     totalReplies: prev.totalReplies + (action === "reply" ? 1 : 0),
     totalPosts: prev.totalPosts + (action === "post" ? 1 : 0),
+    todayQuestCounts: nextQuestCounts,
+    completedQuestIds: nextCompletedQuests,
+    allQuestsBonusClaimed: nextAllQuestsBonus,
   };
 
   return {
@@ -328,6 +478,8 @@ export function recordEngagementAction(
     streakJustLocked,
     tierUp,
     weeklyGoalJustHit,
+    questCompleted,
+    allQuestsSweep,
   };
 }
 
@@ -357,14 +509,11 @@ export function rankPosts(
     const engB = b.likes * 1.4 + b.commentCount * 3.2;
 
     if (tab === "Rising") {
-      // Engagement velocity: recent engagement boosted sharply
       const velA = (engA + 1) / Math.pow(ageHoursA + 1.5, 1.25);
       const velB = (engB + 1) / Math.pow(ageHoursB + 1.5, 1.25);
       return velB - velA;
     }
 
-    // "For You": blends freshness, engagement, personal topic/author affinity,
-    // unseen boost, and mild variable-reward serendipity jitter
     const affinityA =
       (engagement.topicAffinity[a.topic] ?? 0) * 0.45 +
       (engagement.authorAffinity[a.author.id] ?? 0) * 0.55;
@@ -383,6 +532,43 @@ export function rankPosts(
 
     return scoreB - scoreA;
   });
+}
+
+export function getRelatedPosts(post: Post, allPosts: Post[], limit = 2): Post[] {
+  return allPosts
+    .filter((candidate) => candidate.id !== post.id)
+    .map((candidate) => {
+      let score = 0;
+      if (candidate.topic === post.topic) score += 5;
+      if (candidate.author.id === post.author.id) score += 3;
+      score += Math.min(4, candidate.likes * 0.5 + candidate.commentCount * 1.2);
+      return { candidate, score };
+    })
+    .filter((entry) => entry.score >= 3)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((entry) => entry.candidate);
+}
+
+export function getWeeklyRecap(engagement: EngagementState, weeklyGoal: number) {
+  const topics = Object.entries(engagement.topicAffinity).sort((a, b) => b[1] - a[1]);
+  const topTopic = topics[0]?.[0] ?? "General";
+  const tier = getTierInfo(engagement.xp);
+  const reads = engagement.readPostIds.length;
+  const readPct = Math.min(100, Math.round((reads / Math.max(1, weeklyGoal)) * 100));
+  return {
+    reads,
+    weeklyGoal,
+    readPct,
+    likes: engagement.totalLikes,
+    replies: engagement.totalReplies,
+    posts: engagement.totalPosts,
+    streak: engagement.streak,
+    longestStreak: engagement.longestStreak,
+    topTopic,
+    tierName: tier.current.name,
+    xp: engagement.xp,
+  };
 }
 
 export function getTimeGreeting(name: string): string {
