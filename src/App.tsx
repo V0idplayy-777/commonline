@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   ArrowRight,
@@ -201,6 +201,37 @@ function MomentumRing({
       <span>{label}</span>
     </div>
   );
+}
+
+/**
+ * Reads the network-wide admin state (announcement, freeze, overlays). If the
+ * deployed backend predates the admin console the query throws; this boundary
+ * keeps that failure isolated so the rest of Commonline keeps working.
+ */
+class AdminStateBoundary extends Component<{ children: React.ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch() {
+    /* Older deployments simply have no admin state to publish. */
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
+function PublicStateProbe({ onState }: { onState: (state: PublicState) => void }) {
+  const state = useQuery(api.admin.publicState, {}) as PublicState | undefined;
+  const lastSeen = useRef("");
+  useEffect(() => {
+    if (!state) return;
+    const snapshot = JSON.stringify(state);
+    if (snapshot === lastSeen.current) return;
+    lastSeen.current = snapshot;
+    onState(state);
+  }, [state, onState]);
+  return null;
 }
 
 function LoadingScreen() {
@@ -639,7 +670,7 @@ function Workspace({ profile }: { profile: Profile }) {
   const members = useQuery(api.members.list, { search: memberSearch }) as Member[] | undefined;
   const notifications = useQuery(api.notifications.unread, {}) as NotificationItem[] | undefined;
   const preferences = useQuery(api.preferences.current, {});
-  const publicState = useQuery(api.admin.publicState, {}) as PublicState | undefined;
+  const [publicState, setPublicState] = useState<PublicState | null>(null);
 
   const createPost = useMutation(api.posts.create);
   const toggleLike = useMutation(api.posts.toggleLike);
@@ -1067,6 +1098,9 @@ function Workspace({ profile }: { profile: Profile }) {
   return (
     <>
     <div className={`cl-app ${publicState?.upsideDown ? "is-upside-down" : ""}`}>
+      <AdminStateBoundary>
+        <PublicStateProbe onState={setPublicState} />
+      </AdminStateBoundary>
       <CelebrationBurst burstId={celebrationId} />
       <RewardStack items={rewards} />
 
