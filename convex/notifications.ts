@@ -24,6 +24,8 @@ export const unread = query({
         actorHandle: actor.handle,
         postId: row.postId,
         postExcerpt: post?.body.slice(0, 90) ?? "",
+        title: row.title ?? "",
+        message: row.message ?? "",
         createdAt: row.createdAt,
       };
     })).then((items) => items.filter((item) => item !== null));

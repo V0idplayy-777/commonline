@@ -2,6 +2,12 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { query, mutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
+import {
+  assertAccountActive,
+  assertNetworkOpen,
+  assertNotTooFast,
+  getSettings,
+} from "./adminShared";
 
 const modeValidator = v.union(v.literal("all"), v.literal("following"), v.literal("saved"));
 
@@ -63,7 +69,15 @@ export const feed = query({
     }
 
     const distinct = new Map(posts.map((post) => [post._id, post]));
-    const ordered = [...distinct.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, 40);
+    const chronological = [...distinct.values()].sort((a, b) => b.createdAt - a.createdAt);
+    const settings = await getSettings(ctx);
+    // Admin tools: pinned updates float to the top, chaos shuffles everything else.
+    const pinned = chronological
+      .filter((post) => post.pinnedAt !== undefined)
+      .sort((a, b) => (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0));
+    let rest = chronological.filter((post) => post.pinnedAt === undefined);
+    if (settings.chaos) rest = chaosShuffle(rest, Math.floor(Date.now() / 60_000) + settings.updatedAt);
+    const ordered = [...pinned, ...rest].slice(0, 40);
     const savedRows = await ctx.db.query("bookmarks")
       .withIndex("by_user_created", (q) => q.eq("userId", userId))
       .collect();
@@ -103,11 +117,13 @@ export const feed = query({
         liked: like !== null,
         saved: savedIds.has(post._id),
         commentCount: post.commentsCount,
+        pinned: post.pinnedAt !== undefined,
         author: {
           id: author._id,
           name: author.displayName,
           handle: author.handle,
           role: author.role,
+          verified: author.verified === true,
           initials: initials(author.displayName),
           avatar: author.avatarColor,
         },
@@ -163,6 +179,13 @@ export const create = mutation({
     if (cleanTopic.length < 1 || cleanTopic.length > 40) {
       throw new ConvexError("Choose a topic under 40 characters.");
     }
+    const settings = await getSettings(ctx);
+    assertAccountActive(author);
+    assertNetworkOpen(settings);
+    assertNotTooFast(settings, author);
+    if (settings.lockedTopics.some((locked) => locked.toLowerCase() === cleanTopic.toLowerCase())) {
+      throw new ConvexError(`#${cleanTopic} is locked by an administrator right now.`);
+    }
     const postId = await ctx.db.insert("posts", {
       authorId: author._id,
       body: cleanBody,
@@ -172,6 +195,7 @@ export const create = mutation({
       commentsCount: 0,
       createdAt: Date.now(),
     });
+    await ctx.db.patch(author._id, { lastActionAt: Date.now() });
     return postId;
   },
 });
@@ -180,6 +204,8 @@ export const toggleLike = mutation({
   args: { postId: v.id("posts") },
   handler: async (ctx, { postId }) => {
     const user = await signedInProfile(ctx);
+    assertAccountActive(user);
+    assertNetworkOpen(await getSettings(ctx));
     const post = await ctx.db.get(postId);
     if (!post) throw new ConvexError("Post not found.");
     const existing = await ctx.db.query("likes")
@@ -204,6 +230,10 @@ export const reply = mutation({
     if (cleanBody.length < 1 || cleanBody.length > 500) {
       throw new ConvexError("Replies must be between 1 and 500 characters.");
     }
+    const settings = await getSettings(ctx);
+    assertAccountActive(author);
+    assertNetworkOpen(settings);
+    assertNotTooFast(settings, author);
     const post = await ctx.db.get(postId);
     if (!post) throw new ConvexError("Post not found.");
     const commentId = await ctx.db.insert("comments", {
@@ -213,6 +243,7 @@ export const reply = mutation({
       createdAt: Date.now(),
     });
     await ctx.db.patch(postId, { commentsCount: post.commentsCount + 1 });
+    await ctx.db.patch(author._id, { lastActionAt: Date.now() });
     if (post.authorId !== author._id) {
       await ctx.db.insert("notifications", {
         recipientId: post.authorId,
@@ -230,6 +261,8 @@ export const toggleBookmark = mutation({
   args: { postId: v.id("posts") },
   handler: async (ctx, { postId }) => {
     const user = await signedInProfile(ctx);
+    assertAccountActive(user);
+    assertNetworkOpen(await getSettings(ctx));
     if (!(await ctx.db.get(postId))) throw new ConvexError("Post not found.");
     const existing = await ctx.db.query("bookmarks")
       .withIndex("by_post_user", (q) => q.eq("postId", postId).eq("userId", user._id))
@@ -263,6 +296,23 @@ export const remove = mutation({
     return { removed: true };
   },
 });
+
+/** Deterministic shuffle so every viewer sees the same chaos, minute by minute. */
+function chaosShuffle<T>(items: T[], seed: number) {
+  let state = seed | 0;
+  const random = () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const copy = [...items];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(random() * (index + 1));
+    [copy[index], copy[swap]] = [copy[swap], copy[index]];
+  }
+  return copy;
+}
 
 function initials(name: string) {
   return name

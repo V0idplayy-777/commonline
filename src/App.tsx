@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   ArrowRight,
   ArrowUp,
+  BadgeCheck,
   Bell,
   Bookmark,
   BookmarkCheck,
@@ -23,13 +24,18 @@ import {
   LogOut,
   Menu,
   MessageCircle,
+  Pin,
   Plus,
   Search,
   Send,
   Settings,
   Share2,
+  ShieldCheck,
+  Shuffle,
+  Snowflake,
   Sparkles,
   Target,
+  Timer,
   Trash2,
   TrendingUp,
   Trophy,
@@ -45,6 +51,8 @@ import { useAuthActions } from "@convex-dev/auth/react";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
 import type { Doc, Id } from "../convex/_generated/dataModel";
+import { AdminPanel } from "./components/AdminPanel";
+import { AnnouncementBanner, ShrekBombOverlay } from "./components/admin/Overlays";
 import { CelebrationBurst, RewardStack, type RewardPop } from "./components/CelebrationBurst";
 import { RapidFlowModal } from "./components/RapidFlowModal";
 import { CardSwap } from "./components/bencho/CardSwap";
@@ -84,11 +92,11 @@ import {
   playUnlikeSound,
   setSoundEnabled,
 } from "./lib/feedback";
-import type { Member, NotificationItem, Post, Topic } from "./types";
+import type { Member, NotificationItem, Post, PublicState, Topic } from "./types";
 
-type Page = "home" | "explore" | "network" | "saved" | "settings";
+type Page = "home" | "explore" | "network" | "saved" | "settings" | "admin";
 type FeedScope = "For You" | "Rising" | "Following" | "Latest";
-type Profile = Doc<"users"> & { username: string };
+type Profile = Doc<"users"> & { username: string; isAdmin: boolean };
 
 const PAGE_LABEL: Record<Page, string> = {
   home: "Home",
@@ -96,6 +104,7 @@ const PAGE_LABEL: Record<Page, string> = {
   network: "Members",
   saved: "Saved",
   settings: "Settings",
+  admin: "Admin",
 };
 
 const TOPIC_OPTIONS = ["General", "Field notes", "Projects", "Questions", "Research", "Opportunities", "Resources"];
@@ -122,6 +131,22 @@ function relativeTime(value: number) {
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days}d`;
   return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(value);
+}
+
+function readLocalNumber(key: string) {
+  try {
+    return Number(window.localStorage.getItem(key) ?? 0) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeLocalNumber(key: string, value: number) {
+  try {
+    window.localStorage.setItem(key, String(value));
+  } catch {
+    /* storage may be unavailable; dismissal just won't persist */
+  }
 }
 
 function errorText(error: unknown) {
@@ -186,6 +211,37 @@ function MomentumRing({
       <span>{label}</span>
     </div>
   );
+}
+
+/**
+ * Reads the network-wide admin state (announcement, freeze, overlays). If the
+ * deployed backend predates the admin console the query throws; this boundary
+ * keeps that failure isolated so the rest of Commonline keeps working.
+ */
+class AdminStateBoundary extends Component<{ children: React.ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch() {
+    /* Older deployments simply have no admin state to publish. */
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
+function PublicStateProbe({ onState }: { onState: (state: PublicState) => void }) {
+  const state = useQuery(api.admin.publicState, {}) as PublicState | undefined;
+  const lastSeen = useRef("");
+  useEffect(() => {
+    if (!state) return;
+    const snapshot = JSON.stringify(state);
+    if (snapshot === lastSeen.current) return;
+    lastSeen.current = snapshot;
+    onState(state);
+  }, [state, onState]);
+  return null;
 }
 
 function LoadingScreen() {
@@ -455,7 +511,9 @@ function PostCard({
             <button type="button" className="cl-author-name-btn" onClick={() => onOpenAuthor?.(post.author.id)}>
               <strong>{post.author.name}</strong>
             </button>
+            {post.author.verified && <span className="cl-verified-badge" title="Verified member"><BadgeCheck size={13} /></span>}
             <span>@{post.author.handle}</span>
+            {post.pinned && <span className="cl-post-badge cl-badge-pinned"><Pin size={10} /> Pinned</span>}
             {isTrending && <span className="cl-post-badge cl-badge-trending"><TrendingUp size={10} /> Trending</span>}
             {!isTrending && isHotThread && <span className="cl-post-badge cl-badge-hot"><Flame size={10} /> Active thread</span>}
             {!isTrending && !isHotThread && isFresh && <span className="cl-post-badge cl-badge-fresh">Fresh</span>}
@@ -576,6 +634,7 @@ function MemberCard({
         <button type="button" className="cl-author-name-btn" onClick={() => onInspect?.(member.id)}>
           <strong>{member.name}</strong>
         </button>
+        {member.verified && <span className="cl-verified-badge" title="Verified member"><BadgeCheck size={12} /></span>}
         <span>@{member.handle}</span>
         {member.role && <p className="cl-member-role">{member.role}</p>}
         {!compact && member.bio && <p className="cl-member-bio">{member.bio}</p>}
@@ -643,6 +702,8 @@ function Workspace({ profile }: { profile: Profile }) {
   const [activeIndex, setActiveIndex] = useState(-1);
   const [replySignal, setReplySignal] = useState<{ postId: string; count: number }>({ postId: "", count: 0 });
   const [newPostCount, setNewPostCount] = useState(0);
+  const [dismissedAnnouncement, setDismissedAnnouncement] = useState(() => readLocalNumber("cl.dismissedAnnouncement"));
+  const [dismissedBomb, setDismissedBomb] = useState(() => readLocalNumber("cl.dismissedBomb"));
   const [flowOpen, setFlowOpen] = useState(false);
   const [digestDismissed, setDigestDismissed] = useState(false);
   const [promptDismissed, setPromptDismissed] = useState(false);
@@ -670,6 +731,7 @@ function Workspace({ profile }: { profile: Profile }) {
   const allMembers = useQuery(api.members.list, { search: "" }) as Member[] | undefined;
   const notifications = useQuery(api.notifications.unread, {}) as NotificationItem[] | undefined;
   const preferences = useQuery(api.preferences.current, {});
+  const [publicState, setPublicState] = useState<PublicState | null>(null);
 
   const createPost = useMutation(api.posts.create);
   const toggleLike = useMutation(api.posts.toggleLike);
@@ -833,6 +895,13 @@ function Workspace({ profile }: { profile: Profile }) {
   }, [posts]);
 
   const unreadCount = notifications?.length ?? 0;
+  const announcement = publicState?.announcement ?? null;
+  const shrekBomb = publicState?.shrekBomb ?? null;
+  const networkFlags = [
+    publicState?.readOnly ? { label: "Network frozen", icon: <Snowflake size={12} />, tone: "danger" as const } : null,
+    (publicState?.slowModeSeconds ?? 0) > 0 ? { label: `Slow mode ${publicState?.slowModeSeconds}s`, icon: <Timer size={12} />, tone: "warn" as const } : null,
+    publicState?.chaos ? { label: "Chaos shuffle", icon: <Shuffle size={12} />, tone: "warn" as const } : null,
+  ].filter((flag) => flag !== null);
 
   useEffect(() => {
     const baseTitle = unreadCount > 0 ? `(${unreadCount}) Commonline` : "Commonline";
@@ -871,6 +940,24 @@ function Workspace({ profile }: { profile: Profile }) {
     setCelebrationId((v) => v + 1);
     playMilestoneSound();
   }, []);
+
+  // An admin's party announcement fires confetti for everyone who is online.
+  const lastAnnouncementBurst = useRef(0);
+  useEffect(() => {
+    const burst = announcement?.burst ?? 0;
+    if (!burst) {
+      lastAnnouncementBurst.current = 0;
+      return;
+    }
+    if (lastAnnouncementBurst.current === 0) {
+      lastAnnouncementBurst.current = burst;
+      return;
+    }
+    if (burst !== lastAnnouncementBurst.current) {
+      lastAnnouncementBurst.current = burst;
+      triggerCelebration();
+    }
+  }, [announcement?.burst, triggerCelebration]);
 
   const applyEngagement = useCallback(
     (action: EngagementAction, meta: { topic?: string; authorId?: string; postId?: string; combo?: number } = {}) => {
@@ -1161,7 +1248,11 @@ function Workspace({ profile }: { profile: Profile }) {
   const hasDraft = body.trim().length > 0 && !composerOpen;
 
   return (
-    <div className="cl-app">
+    <>
+    <div className={`cl-app ${publicState?.upsideDown ? "is-upside-down" : ""}`}>
+      <AdminStateBoundary>
+        <PublicStateProbe onState={setPublicState} />
+      </AdminStateBoundary>
       <CelebrationBurst burstId={celebrationId} />
       <RewardStack items={rewards} />
 
@@ -1215,6 +1306,9 @@ function Workspace({ profile }: { profile: Profile }) {
         <div className="cl-sidebar-rule" />
         <div className="cl-nav-label">YOUR ACCOUNT</div>
         <NavButton icon={<Settings size={18} />} label="Settings" page="settings" current={page} onClick={changePage} />
+        {profile.isAdmin && (
+          <NavButton icon={<ShieldCheck size={18} />} label="Admin console" page="admin" current={page} onClick={changePage} />
+        )}
         <div className="cl-sidebar-bottom">
           <button className="cl-share-card" type="button" onClick={handleShareCommonline}>
             <span className="cl-share-card-icon"><Copy size={16} /></span>
@@ -1268,6 +1362,26 @@ function Workspace({ profile }: { profile: Profile }) {
         </header>
 
         <div className="cl-page-content">
+          {announcement && dismissedAnnouncement !== announcement.createdAt && (
+            <AnnouncementBanner
+              announcement={announcement}
+              onDismiss={() => {
+                setDismissedAnnouncement(announcement.createdAt);
+                writeLocalNumber("cl.dismissedAnnouncement", announcement.createdAt);
+              }}
+            />
+          )}
+          {networkFlags.length > 0 && (
+            <div className="cl-net-status" role="status">
+              <span className="cl-net-status-label">ADMIN SWITCH</span>
+              {networkFlags.map((flag) => (
+                <span key={flag.label} className={`cl-net-chip is-${flag.tone}`}>{flag.icon}{flag.label}</span>
+              ))}
+              {networkFlags.some((flag) => flag.tone === "danger") && (
+                <span className="cl-net-status-note">Posting, replies, likes, saves and follows are paused.</span>
+              )}
+            </div>
+          )}
           {page === "home" && (
             <>
               <section className="cl-page-heading cl-home-heading">
@@ -1688,6 +1802,19 @@ function Workspace({ profile }: { profile: Profile }) {
             </>
           )}
 
+          {page === "admin" && (
+            profile.isAdmin ? (
+              <AdminPanel viewerName={profile.displayName} onExit={() => changePage("settings")} onFlash={showFlash} />
+            ) : (
+              <EmptyState
+                icon="members"
+                title="Admins only"
+                body="This console is limited to the Commonline staff allow-list."
+                action={{ label: "Back to home", onClick: () => changePage("home") }}
+              />
+            )
+          )}
+
           <footer className="cl-footer"><span>COMMONLINE</span><span>Where great work finds its people.</span><span>© 2026</span></footer>
         </div>
       </main>
@@ -1811,25 +1938,43 @@ function Workspace({ profile }: { profile: Profile }) {
           <button type="button" className="cl-drawer-backdrop" aria-label="Close notifications" onClick={() => setNotificationsOpen(false)} />
           <aside className="cl-notifications-drawer" aria-label="Notifications">
             <div className="cl-drawer-header"><div><span className="cl-section-label">ACTIVITY</span><h2>Notifications</h2></div><button type="button" className="cl-icon-button" onClick={() => setNotificationsOpen(false)} aria-label="Close notifications"><X size={18} /></button></div>
-            <p className="cl-drawer-intro">Replies and new follows from across your network.</p>
+            <p className="cl-drawer-intro">Replies, new follows and notices from the network.</p>
             {notifications === undefined ? <div className="cl-loading-card"><span /><span /></div> : notifications.length ? (
               <ToastStack
                 items={notifications.map((item) => ({
                   id: item.id,
-                  kind: item.kind === "reply" ? "info" as const : "success" as const,
-                  title: item.kind === "reply" ? `${item.actorName} replied` : `${item.actorName} followed you`,
-                  body: item.kind === "reply" ? (item.postExcerpt ? `“${item.postExcerpt}”` : "A reply was added to your update.") : `@${item.actorHandle} joined your network.`,
+                  kind: item.kind === "reply" ? "info" as const : item.kind === "system" ? "warning" as const : "success" as const,
+                  title: item.kind === "reply"
+                    ? `${item.actorName} replied`
+                    : item.kind === "follow"
+                      ? `${item.actorName} followed you`
+                      : (item.title || "Admin notice"),
+                  body: item.kind === "reply"
+                    ? (item.postExcerpt ? `“${item.postExcerpt}”` : "A reply was added to your update.")
+                    : item.kind === "follow"
+                      ? `@${item.actorHandle} joined your network.`
+                      : (item.message || "An administrator sent you a notice."),
                   action: "Mark read",
                 }))}
                 onRead={markNotificationRead}
               />
-            ) : <div className="cl-notification-empty"><span><Bell size={19} /></span><strong>You're all caught up.</strong><p>New replies and follows will appear here live.</p></div>}
+            ) : <div className="cl-notification-empty"><span><Bell size={19} /></span><strong>You're all caught up.</strong><p>New replies, follows and admin notices appear here live.</p></div>}
           </aside>
         </>
       )}
 
       {flash && <div className="cl-toast-message" role="status"><span><Check size={13} /></span>{flash}</div>}
     </div>
+      {shrekBomb && dismissedBomb !== shrekBomb.startedAt && (
+        <ShrekBombOverlay
+          bomb={shrekBomb}
+          onDismiss={() => {
+            setDismissedBomb(shrekBomb.startedAt);
+            writeLocalNumber("cl.dismissedBomb", shrekBomb.startedAt);
+          }}
+        />
+      )}
+    </>
   );
 }
 
